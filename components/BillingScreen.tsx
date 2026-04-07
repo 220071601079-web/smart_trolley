@@ -18,7 +18,8 @@ const BillingScreen: React.FC<BillingScreenProps> = ({ items, clearCart, lang })
   const [isPaid, setIsPaid] = useState(false);
   const [receiptUrl, setReceiptUrl] = useState<string | null>(null);
   const [txnId, setTxnId] = useState<string | null>(null);
-  const [backendOrderId, setBackendOrderId] = useState<string | null>(null);
+  const [isLoading, setIsLoading] = useState(false);
+  const [loadingMsg, setLoadingMsg] = useState("");
 
   const unscanned = items.filter(i => i.status === ItemStatus.UNSCANNED);
 
@@ -28,44 +29,54 @@ const BillingScreen: React.FC<BillingScreenProps> = ({ items, clearCart, lang })
 
   const handlePayNow = async () => {
 
-    console.log("PAYMENT_API_URL:", PAYMENT_API_URL);
+    setIsLoading(true);
+    setLoadingMsg("Creating order...");
 
     try {
 
+      // STEP 1: Checkout
       const checkoutRes = await fetch(`${API_URL}/checkout`, {
         method: "POST",
-        headers: {
-          "Content-Type": "application/json"
-        },
-        body: JSON.stringify({
-          trolley_code: "TRL001"
-        })
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ trolley_code: "TRL001" })
       });
 
-      const checkoutData = await checkoutRes.json();
-
-      // ✅ FIX: safety check
-      if (!checkoutData.order_id) {
-        alert("Checkout failed");
+      if (!checkoutRes.ok) {
+        const err = await checkoutRes.json();
+        alert("Checkout failed: " + (err.detail || "Unknown error"));
+        setIsLoading(false);
         return;
       }
 
-      // ✅ FIX: correct state usage
-      setBackendOrderId(checkoutData.order_id);
+      const checkoutData = await checkoutRes.json();
 
-      // ✅ FIX: correct logging
+      if (!checkoutData.order_id) {
+        alert("Checkout failed: No order ID returned");
+        setIsLoading(false);
+        return;
+      }
+
       console.log("Backend Order ID:", checkoutData.order_id);
+
+      // STEP 2: Create Razorpay order
+      setLoadingMsg("Initializing payment...");
 
       const res = await fetch(`${PAYMENT_API_URL}/create-order`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          amount: Math.round(grandTotal * 100)
-        })
+        body: JSON.stringify({ amount: Math.round(grandTotal * 100) })
       });
 
-      const order = await res.json();
+      if (!res.ok) {
+        alert("Failed to create payment order");
+        setIsLoading(false);
+        return;
+      }
 
+      const order = await res.json();
+      setIsLoading(false);
+
+      // STEP 3: Open Razorpay
       const options = {
         key: import.meta.env.VITE_RAZORPAY_KEY_ID,
         amount: order.amount,
@@ -76,48 +87,67 @@ const BillingScreen: React.FC<BillingScreenProps> = ({ items, clearCart, lang })
 
         handler: async function (response: any) {
 
-          console.log("Payment success:", response);
+          console.log("Razorpay payment success:", response);
           setTxnId(response.razorpay_order_id);
+          setIsLoading(true);
+          setLoadingMsg("Confirming payment...");
 
           try {
 
-            // ✅ FIX: use backend order_id (NOT razorpay id)
-            await fetch(`${API_URL}/payment-success`, {
+            // STEP 4: Mark payment success in backend
+            const successRes = await fetch(`${API_URL}/payment-success`, {
               method: "POST",
-              headers: {
-                "Content-Type": "application/json"
-              },
-              body: JSON.stringify({
-                order_id: checkoutData.order_id
-              })
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ order_id: checkoutData.order_id })
             });
 
-            // ✅ FIX: use backend order_id
+            if (!successRes.ok) {
+              console.error("payment-success endpoint failed");
+              alert("Payment done but failed to confirm. Contact support.");
+              setIsPaid(true);
+              setIsLoading(false);
+              return;
+            }
+
+            // STEP 5: Generate receipt
+            setLoadingMsg("Generating receipt...");
+
             const receiptRes = await fetch(
               `${API_URL}/generate-receipt?order_id=${checkoutData.order_id}`
             );
 
-            const receiptData = await receiptRes.json();
-
-            if (!receiptData.receipt_url) {
-              console.error("Receipt generation failed");
+            if (!receiptRes.ok) {
+              const err = await receiptRes.json();
+              console.error("Receipt generation failed:", err);
+              alert("Payment successful! But receipt generation failed.");
+              setIsPaid(true);
+              setIsLoading(false);
               return;
             }
 
-            setReceiptUrl(receiptData.receipt_url);
+            const receiptData = await receiptRes.json();
+            console.log("Receipt data:", receiptData);
 
-            window.open(receiptData.receipt_url, "_blank");
+            if (receiptData.receipt_url) {
+              setReceiptUrl(receiptData.receipt_url);
+            }
 
           } catch (err) {
-            console.error("Backend error:", err);
+            console.error("Post-payment error:", err);
+            alert("Payment done but something went wrong generating receipt.");
           }
 
           setIsPaid(true);
+          setIsLoading(false);
         },
 
-        theme: {
-          color: "#594070"
-        }
+        modal: {
+          ondismiss: function () {
+            setIsLoading(false);
+          }
+        },
+
+        theme: { color: "#594070" }
       };
 
       const rzp = new (window as any).Razorpay(options);
@@ -125,10 +155,24 @@ const BillingScreen: React.FC<BillingScreenProps> = ({ items, clearCart, lang })
 
     } catch (err) {
       console.error("Payment error:", err);
+      alert("Something went wrong. Please try again.");
+      setIsLoading(false);
     }
 
   };
 
+  // ── LOADING OVERLAY ──
+  if (isLoading) {
+    return (
+      <div className="p-6 text-center flex flex-col items-center justify-center min-h-[400px]">
+        <div className="w-16 h-16 border-4 border-indigo-200 border-t-indigo-600 rounded-full animate-spin mb-6"></div>
+        <p className="text-gray-600 font-medium text-lg">{loadingMsg}</p>
+        <p className="text-gray-400 text-sm mt-2">Please wait, do not close this page</p>
+      </div>
+    );
+  }
+
+  // ── SUCCESS SCREEN ──
   if (isPaid) {
     return (
       <div className="p-6 text-center animate-fade-in">
@@ -137,16 +181,18 @@ const BillingScreen: React.FC<BillingScreenProps> = ({ items, clearCart, lang })
           <i className="fas fa-check"></i>
         </div>
 
-        <h2 className="text-2xl font-bold text-gray-800 mb-2">{t.pay_success}</h2>
+        <h2 className="text-2xl font-bold text-gray-800 mb-4">{t.pay_success}</h2>
 
-        {receiptUrl && (
+        {receiptUrl ? (
           <button
             onClick={() => window.open(receiptUrl, "_blank")}
-            className="mb-8 bg-green-600 text-white px-6 py-3 rounded-xl shadow hover:bg-green-700"
+            className="mb-6 bg-green-600 text-white px-6 py-3 rounded-xl shadow hover:bg-green-700 active:scale-95 transition-all"
           >
             <i className="fas fa-file-invoice mr-2"></i>
-            View Receipt
+            View Receipt (PDF)
           </button>
+        ) : (
+          <p className="mb-6 text-sm text-gray-400 italic">Receipt unavailable</p>
         )}
 
         <div className="bg-gray-50 rounded-2xl p-6 border-2 border-dashed border-gray-200 text-left mb-8 font-mono text-sm">
@@ -154,18 +200,15 @@ const BillingScreen: React.FC<BillingScreenProps> = ({ items, clearCart, lang })
           <p className="text-center font-bold mb-4 border-b pb-2">{t.receipt_header}</p>
 
           {items.map(item => {
-
             const localizedName = item.barcode
               ? t.products[item.barcode] || item.name
               : t.products['unknown'];
-
             return (
               <div key={item.id} className="flex justify-between mb-1">
                 <span>{localizedName?.slice(0, 15)}</span>
                 <span>₹{item.price}</span>
               </div>
             );
-
           })}
 
           <div className="border-t mt-4 pt-2 font-bold flex justify-between">
@@ -173,9 +216,11 @@ const BillingScreen: React.FC<BillingScreenProps> = ({ items, clearCart, lang })
             <span>₹{grandTotal.toFixed(2)}</span>
           </div>
 
-          <p className="mt-4 text-[10px] text-center text-gray-400">
-            {t.txn_id}: {txnId}
-          </p>
+          {txnId && (
+            <p className="mt-4 text-[10px] text-center text-gray-400">
+              {t.txn_id}: {txnId}
+            </p>
+          )}
 
         </div>
 
@@ -195,6 +240,7 @@ const BillingScreen: React.FC<BillingScreenProps> = ({ items, clearCart, lang })
     );
   }
 
+  // ── BILLING SCREEN ──
   return (
 
     <div className="p-4">
@@ -204,17 +250,9 @@ const BillingScreen: React.FC<BillingScreenProps> = ({ items, clearCart, lang })
       {unscanned.length > 0 ? (
 
         <div className="bg-red-50 border-2 border-red-200 rounded-2xl p-6 text-center">
-
           <i className="fas fa-exclamation-circle text-red-500 text-4xl mb-4"></i>
-
-          <h3 className="text-lg font-bold text-red-800 mb-2">
-            {t.unscanned_alert}
-          </h3>
-
-          <p className="text-sm text-red-600 mb-6">
-            {t.unscanned_desc}
-          </p>
-
+          <h3 className="text-lg font-bold text-red-800 mb-2">{t.unscanned_alert}</h3>
+          <p className="text-sm text-red-600 mb-6">{t.unscanned_desc}</p>
         </div>
 
       ) : items.length === 0 ? (
@@ -229,34 +267,20 @@ const BillingScreen: React.FC<BillingScreenProps> = ({ items, clearCart, lang })
         <div className="space-y-6">
 
           <div className="bg-white rounded-2xl border border-gray-100 shadow-sm p-4 divide-y divide-gray-100">
-
             {items.map(item => {
-
               const localizedName = item.barcode
                 ? t.products[item.barcode] || item.name
                 : t.products['unknown'];
-
               return (
                 <div key={item.id} className="py-3 flex justify-between items-center">
-
                   <div>
-                    <p className="font-bold text-gray-800 text-sm">
-                      {localizedName}
-                    </p>
-                    <p className="text-xs text-gray-400">
-                      Barcode: {item.barcode}
-                    </p>
+                    <p className="font-bold text-gray-800 text-sm">{localizedName}</p>
+                    <p className="text-xs text-gray-400">Barcode: {item.barcode}</p>
                   </div>
-
-                  <p className="font-bold text-gray-700">
-                    ₹{item.price}
-                  </p>
-
+                  <p className="font-bold text-gray-700">₹{item.price}</p>
                 </div>
               );
-
             })}
-
           </div>
 
           <div className="bg-indigo-50 rounded-2xl p-6 space-y-2">
