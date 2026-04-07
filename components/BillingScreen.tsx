@@ -1,5 +1,5 @@
 const API_URL = import.meta.env.VITE_API_URL as string;
-import { PAYMENT_API_URL } from '../apiUrls';
+const PAYMENT_API_URL = import.meta.env.VITE_API_URL as string;
 import React, { useState } from 'react';
 import { CartItem, ItemStatus, Language } from '../types';
 import { TRANSLATIONS } from '../constants';
