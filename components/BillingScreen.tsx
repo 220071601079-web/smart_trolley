@@ -1,5 +1,6 @@
 const API_URL = import.meta.env.VITE_API_URL as string;
 const PAYMENT_API_URL = import.meta.env.VITE_API_URL as string;
+
 import React, { useState } from 'react';
 import { CartItem, ItemStatus, Language } from '../types';
 import { TRANSLATIONS } from '../constants';
@@ -17,7 +18,8 @@ const BillingScreen: React.FC<BillingScreenProps> = ({ items, clearCart, lang })
   const [isPaid, setIsPaid] = useState(false);
   const [receiptUrl, setReceiptUrl] = useState<string | null>(null);
   const [txnId, setTxnId] = useState<string | null>(null);
-  
+  const [backendOrderId, setBackendOrderId] = useState<string | null>(null);
+
   const unscanned = items.filter(i => i.status === ItemStatus.UNSCANNED);
 
   const total = items.reduce((acc, i) => acc + (i.price || 0), 0);
@@ -26,23 +28,43 @@ const BillingScreen: React.FC<BillingScreenProps> = ({ items, clearCart, lang })
 
   const handlePayNow = async () => {
 
-    console.log("PAYMENT_API_URL:", PAYMENT_API_URL);
+    console.log("API_URL:", API_URL);
 
     try {
 
-      // create Razorpay order
+      // ✅ STEP 1: Create order in YOUR backend
+      const checkoutRes = await fetch(`${API_URL}/checkout?trolley_code=TR001`, {
+        method: "POST"
+      });
+
+      const checkoutData = await checkoutRes.json();
+
+      if (!checkoutData.order_id) {
+        alert("Checkout failed");
+        return;
+      }
+
+      setBackendOrderId(checkoutData.order_id);
+
+      console.log("Backend Order ID:", checkoutData.order_id);
+
+      if (!backendOrderId) {
+        alert("Order not created properly. Try again.");
+        return;
+      }
+
+      // ✅ STEP 2: Create Razorpay order
       const res = await fetch(`${PAYMENT_API_URL}/create-order`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-
         body: JSON.stringify({
-          amount: Math.round(grandTotal * 100) // rupees → paise
+          amount: Math.round(grandTotal * 100)
         })
-
       });
 
       const order = await res.json();
 
+      // ✅ STEP 3: Razorpay payment
       const options = {
         key: import.meta.env.VITE_RAZORPAY_KEY_ID,
         amount: order.amount,
@@ -58,32 +80,36 @@ const BillingScreen: React.FC<BillingScreenProps> = ({ items, clearCart, lang })
 
           try {
 
-            // notify backend payment success
+            // ✅ STEP 4: Update payment status
             await fetch(`${API_URL}/payment-success`, {
               method: "POST",
               headers: {
                 "Content-Type": "application/json"
               },
               body: JSON.stringify({
-                order_id: response.razorpay_order_id
+                order_id: backendOrderId  // ✅ CORRECT ID
               })
             });
 
-            // generate receipt
-           const receiptRes = await fetch(
-            `${API_URL}/generate-receipt?order_id=${response.razorpay_order_id}`
-          );
+            // ✅ STEP 5: Generate receipt
+            const receiptRes = await fetch(
+              `${API_URL}/generate-receipt?order_id=${backendOrderId}` // ✅ CORRECT ID
+            );
 
-      const receiptData = await receiptRes.json();
-      if (!receiptData.receipt_url) {
-      console.error("Receipt generation failed");
-      return;
-    }
+            const receiptData = await receiptRes.json();
 
-      setReceiptUrl(receiptData.receipt_url);
+            console.log("Receipt Data:", receiptData);
 
-      // automatically open receipt
-      window.open(receiptData.receipt_url, "_blank");
+            if (!receiptData.receipt_url) {
+              console.error("Receipt generation failed", receiptData);
+              alert("Receipt generation failed");
+              return;
+            }
+
+            setReceiptUrl(receiptData.receipt_url);
+
+            // ✅ Auto open PDF
+            window.open(receiptData.receipt_url, "_blank");
 
           } catch (err) {
             console.error("Backend error:", err);
@@ -106,6 +132,8 @@ const BillingScreen: React.FC<BillingScreenProps> = ({ items, clearCart, lang })
 
   };
 
+  // ---------------- UI ----------------
+
   if (isPaid) {
     return (
       <div className="p-6 text-center animate-fade-in">
@@ -115,6 +143,7 @@ const BillingScreen: React.FC<BillingScreenProps> = ({ items, clearCart, lang })
         </div>
 
         <h2 className="text-2xl font-bold text-gray-800 mb-2">{t.pay_success}</h2>
+
         {receiptUrl && (
           <button
             onClick={() => window.open(receiptUrl, "_blank")}
@@ -190,18 +219,6 @@ const BillingScreen: React.FC<BillingScreenProps> = ({ items, clearCart, lang })
             {t.unscanned_desc}
           </p>
 
-          <div className="space-y-2 mb-6">
-            {unscanned.map(u => (
-              <div key={u.id} className="text-xs bg-red-100 text-red-800 p-2 rounded">
-                {t.products['unknown']} ({u.weight}g)
-              </div>
-            ))}
-          </div>
-
-          <p className="text-[10px] text-gray-400 italic">
-            Self-checkout is disabled for security verification.
-          </p>
-
         </div>
 
       ) : items.length === 0 ? (
@@ -225,20 +242,15 @@ const BillingScreen: React.FC<BillingScreenProps> = ({ items, clearCart, lang })
 
               return (
                 <div key={item.id} className="py-3 flex justify-between items-center">
-
                   <div>
                     <p className="font-bold text-gray-800 text-sm">
                       {localizedName}
-                    </p>
-                    <p className="text-xs text-gray-400">
-                      Barcode: {item.barcode}
                     </p>
                   </div>
 
                   <p className="font-bold text-gray-700">
                     ₹{item.price}
                   </p>
-
                 </div>
               );
 
@@ -269,8 +281,7 @@ const BillingScreen: React.FC<BillingScreenProps> = ({ items, clearCart, lang })
             onClick={handlePayNow}
             className="w-full bg-indigo-600 text-white font-bold py-4 rounded-xl flex items-center justify-center gap-3 hover:bg-indigo-700 active:scale-95 transition-all"
           >
-            <i className="fas fa-credit-card"></i>
-            {t.pay_card}
+            💳 {t.pay_card}
           </button>
 
         </div>
@@ -278,10 +289,7 @@ const BillingScreen: React.FC<BillingScreenProps> = ({ items, clearCart, lang })
       )}
 
     </div>
-
   );
-
 };
 
 export default BillingScreen;
-
