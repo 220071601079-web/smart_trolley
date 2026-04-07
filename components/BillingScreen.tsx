@@ -28,32 +28,34 @@ const BillingScreen: React.FC<BillingScreenProps> = ({ items, clearCart, lang })
 
   const handlePayNow = async () => {
 
-    console.log("API_URL:", API_URL);
+    console.log("PAYMENT_API_URL:", PAYMENT_API_URL);
 
     try {
 
-      // ✅ STEP 1: Create order in YOUR backend
-      const checkoutRes = await fetch(`${API_URL}/checkout?trolley_code=TR001`, {
-        method: "POST"
+      const checkoutRes = await fetch(`${API_URL}/checkout`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json"
+        },
+        body: JSON.stringify({
+          trolley_code: "TR001"
+        })
       });
 
       const checkoutData = await checkoutRes.json();
 
+      // ✅ FIX: safety check
       if (!checkoutData.order_id) {
         alert("Checkout failed");
         return;
       }
 
+      // ✅ FIX: correct state usage
       setBackendOrderId(checkoutData.order_id);
 
+      // ✅ FIX: correct logging
       console.log("Backend Order ID:", checkoutData.order_id);
 
-      if (!backendOrderId) {
-        alert("Order not created properly. Try again.");
-        return;
-      }
-
-      // ✅ STEP 2: Create Razorpay order
       const res = await fetch(`${PAYMENT_API_URL}/create-order`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -64,7 +66,6 @@ const BillingScreen: React.FC<BillingScreenProps> = ({ items, clearCart, lang })
 
       const order = await res.json();
 
-      // ✅ STEP 3: Razorpay payment
       const options = {
         key: import.meta.env.VITE_RAZORPAY_KEY_ID,
         amount: order.amount,
@@ -80,35 +81,31 @@ const BillingScreen: React.FC<BillingScreenProps> = ({ items, clearCart, lang })
 
           try {
 
-            // ✅ STEP 4: Update payment status
+            // ✅ FIX: use backend order_id (NOT razorpay id)
             await fetch(`${API_URL}/payment-success`, {
               method: "POST",
               headers: {
                 "Content-Type": "application/json"
               },
               body: JSON.stringify({
-                order_id: backendOrderId  // ✅ CORRECT ID
+                order_id: checkoutData.order_id
               })
             });
 
-            // ✅ STEP 5: Generate receipt
+            // ✅ FIX: use backend order_id
             const receiptRes = await fetch(
-              `${API_URL}/generate-receipt?order_id=${backendOrderId}` // ✅ CORRECT ID
+              `${API_URL}/generate-receipt?order_id=${checkoutData.order_id}`
             );
 
             const receiptData = await receiptRes.json();
 
-            console.log("Receipt Data:", receiptData);
-
             if (!receiptData.receipt_url) {
-              console.error("Receipt generation failed", receiptData);
-              alert("Receipt generation failed");
+              console.error("Receipt generation failed");
               return;
             }
 
             setReceiptUrl(receiptData.receipt_url);
 
-            // ✅ Auto open PDF
             window.open(receiptData.receipt_url, "_blank");
 
           } catch (err) {
@@ -132,8 +129,6 @@ const BillingScreen: React.FC<BillingScreenProps> = ({ items, clearCart, lang })
 
   };
 
-  // ---------------- UI ----------------
-
   if (isPaid) {
     return (
       <div className="p-6 text-center animate-fade-in">
@@ -149,7 +144,8 @@ const BillingScreen: React.FC<BillingScreenProps> = ({ items, clearCart, lang })
             onClick={() => window.open(receiptUrl, "_blank")}
             className="mb-8 bg-green-600 text-white px-6 py-3 rounded-xl shadow hover:bg-green-700"
           >
-            📄 View Receipt
+            <i className="fas fa-file-invoice mr-2"></i>
+            View Receipt
           </button>
         )}
 
@@ -242,15 +238,20 @@ const BillingScreen: React.FC<BillingScreenProps> = ({ items, clearCart, lang })
 
               return (
                 <div key={item.id} className="py-3 flex justify-between items-center">
+
                   <div>
                     <p className="font-bold text-gray-800 text-sm">
                       {localizedName}
+                    </p>
+                    <p className="text-xs text-gray-400">
+                      Barcode: {item.barcode}
                     </p>
                   </div>
 
                   <p className="font-bold text-gray-700">
                     ₹{item.price}
                   </p>
+
                 </div>
               );
 
@@ -281,7 +282,8 @@ const BillingScreen: React.FC<BillingScreenProps> = ({ items, clearCart, lang })
             onClick={handlePayNow}
             className="w-full bg-indigo-600 text-white font-bold py-4 rounded-xl flex items-center justify-center gap-3 hover:bg-indigo-700 active:scale-95 transition-all"
           >
-            💳 {t.pay_card}
+            <i className="fas fa-credit-card"></i>
+            {t.pay_card}
           </button>
 
         </div>
@@ -289,7 +291,9 @@ const BillingScreen: React.FC<BillingScreenProps> = ({ items, clearCart, lang })
       )}
 
     </div>
+
   );
+
 };
 
 export default BillingScreen;
