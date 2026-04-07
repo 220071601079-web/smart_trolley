@@ -26,6 +26,8 @@ const BillingScreen: React.FC<BillingScreenProps> = ({ items, clearCart, lang })
 
   const handlePayNow = async () => {
 
+    console.log("PAYMENT_API_URL:", PAYMENT_API_URL);
+
     try {
 
       // create Razorpay order
