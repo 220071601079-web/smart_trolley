@@ -38,7 +38,7 @@ const BillingScreen: React.FC<BillingScreenProps> = ({ items, clearCart, lang })
           "Content-Type": "application/json"
         },
         body: JSON.stringify({
-          trolley_code: "TR001"
+          trolley_code: "TRL001"
         })
       });
 
